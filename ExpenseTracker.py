@@ -6,12 +6,15 @@ import csv
 
 conn = sqlite3.connect('expenses.db')
 cursor = conn.cursor()
+cursor.execute('''CREATE TABLE IF NOT EXISTS budgets
+                 (user_id INTEGER PRIMARY KEY, budget REAL)''')
+
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         name TEXT,       
-        amount REAL,
+        amount REAL,       
         description TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -20,11 +23,18 @@ conn.commit()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f'{update.effective_user.first_name}, Welcome to the Expense Tracker Bot! Send /add expense to log your expenses.')
+    user_id = update.message.from_user.id
+    budget = 0
+    cursor.execute("INSERT INTO budgets (user_id, budget) VALUES (?, ?)", (user_id, budget))
+    conn.commit()
 
 async def add_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     text = update.message.text.replace('/add', '').strip()
     name = update.effective_user.first_name
+    cursor.execute('SELECT budget FROM budgets WHERE user_id=?', (user_id,))
+    rem_budget = float(cursor.fetchone()[0])
+
     print(name)
 
     try:
@@ -39,8 +49,14 @@ async def add_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if (amount<0):
         await update.message.reply_text(f' {amount} Subtract successfully!')
-    else:    
-        await update.message.reply_text(f'Expense of {amount} added successfully!')
+    else: 
+        if (rem_budget<=0):
+            await update.message.reply_text(f'Expense of {amount} added successfully! ')
+        else:
+            rel_budget = float(rem_budget - amount)
+            cursor.execute("REPLACE INTO budgets (user_id, budget) VALUES (?, ?)", (user_id, rel_budget))
+            conn.commit()
+            await update.message.reply_text(f'Expense of {amount} added successfully & remaining budget is { rel_budget }.')
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
@@ -59,7 +75,8 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(message)
 
 async def generate_csv(update: Update, context: CallbackContext) -> None:
-    cursor.execute('SELECT * FROM expenses')
+    user_id = update.message.from_user.id
+    cursor.execute('SELECT * FROM expenses WHERE user_id=?', (user_id,))
     rows = cursor.fetchall()
 
     with open('expense.csv', 'w', newline='') as csvfile:
@@ -90,6 +107,32 @@ async def monthly_summary(update: Update, context: CallbackContext) -> None:
     else:
         await update.message.reply_text('No expenses found for this month.')
 
+async def set_budget(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    if len(context.args) == 0:
+        await update.message.reply_text('Please provide your budget amount. Usage: /setbudget <amount>')
+    else:
+        try:
+            budget = float(context.args[0])
+            cursor.execute("INSERT OR REPLACE INTO budgets (user_id, budget) VALUES (?, ?)", (user_id, budget))
+            conn.commit()
+            await update.message.reply_text(f'Your monthly budget has been set to {budget} .')
+        except ValueError:
+            await update.message.reply_text('Invalid input. Please provide a valid number.')
+
+async def recommend_expenses(update: Update, context: CallbackContext) -> None:
+     user_id = update.message.from_user.id
+     cursor.execute("SELECT amount FROM expenses WHERE user_id = ?", (user_id,))
+     expenses = cursor.fetchall()
+     if expenses:
+        total_expenses = sum(expense[0] for expense in expenses)
+        average_expense = total_expenses / len(expenses)
+        recommended_budget = average_expense * 1.2  # Adjust the multiplier as needed
+        await update.message.reply_text(f'Based on your previous expenses, we recommend a budget of {recommended_budget} for next month.')
+     else:
+        await update.message.reply_text('You have no expenses yet, so we cannot recommend a budget.')            
+                 
+
 app = ApplicationBuilder().token("6728770002:AAGnIvilElJcPNIp9KsDnMcx_k0Lu0O2jtg").build()
 
 app.add_handler(CommandHandler("start", start))
@@ -98,5 +141,7 @@ app.add_handler(CommandHandler("list", list_expenses))
 app.add_handler(CommandHandler("Delete", clear_expenses))
 app.add_handler(CommandHandler("Monthly", monthly_summary))
 app.add_handler(CommandHandler("generatecsv", generate_csv))
+app.add_handler(CommandHandler("setbudget", set_budget))
+app.add_handler(CommandHandler("recommended", recommend_expenses))
 
 app.run_polling()
